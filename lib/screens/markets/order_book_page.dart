@@ -274,7 +274,18 @@ class _OrderBookPageState extends State<OrderBookPage> {
     } catch (_) {}
 
     if (_pairOrderBook == null) {
-      return const Center(heightFactor: 10, child: CircularProgressIndicator());
+      String orderbookError = _orderBookProvider.getOrderbookError();
+      if (orderbookError == null) {
+        return const Center(
+            heightFactor: 10, child: CircularProgressIndicator());
+      } else {
+        return Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Text(
+              'The order book is currently unavailable for the selected pair.',
+              style: Theme.of(context).textTheme.headline6),
+        );
+      }
     }
 
     final List<Ask> _sortedAsks =
@@ -319,7 +330,8 @@ class _OrderBookPageState extends State<OrderBookPage> {
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           Text(
-            'Showing $listLimit of ${max(listLength, listLimit)} orders. ',
+            AppLocalizations.of(context)
+                .showingOrders(listLimit, max(listLength, listLimit)),
             style: Theme.of(context).textTheme.bodyText1,
           ),
           if (listLimit > listLimitMin)
@@ -332,7 +344,7 @@ class _OrderBookPageState extends State<OrderBookPage> {
                 child: Container(
                   padding: EdgeInsets.all(6),
                   child: Text(
-                    'Less',
+                    AppLocalizations.of(context).orderBookLess,
                     style: TextStyle(
                       fontSize: 14,
                       color: Theme.of(context).colorScheme.secondary,
@@ -349,7 +361,7 @@ class _OrderBookPageState extends State<OrderBookPage> {
                 child: Container(
                   padding: EdgeInsets.all(6),
                   child: Text(
-                    'More',
+                    AppLocalizations.of(context).orderBookMore,
                     style: TextStyle(
                       fontSize: 14,
                       color: Theme.of(context).colorScheme.secondary,

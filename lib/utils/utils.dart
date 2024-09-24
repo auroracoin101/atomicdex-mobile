@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 
 import 'package:bip39/bip39.dart' as bip39;
@@ -11,6 +12,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:rational/rational.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_config/app_config.dart';
@@ -35,7 +37,11 @@ import '../widgets/qr_view.dart';
 void copyToClipBoard(BuildContext context, String str) {
   ScaffoldMessengerState scaffoldMessenger;
   try {
-    scaffoldMessenger = ScaffoldMessenger.of(context);
+    scaffoldMessenger = ScaffoldMessenger.maybeOf(context);
+    assert(
+      scaffoldMessenger != null,
+      'No ScaffoldMessenger found when copying to clipboard',
+    );
   } catch (_) {}
 
   if (scaffoldMessenger != null) {
@@ -45,6 +51,14 @@ void copyToClipBoard(BuildContext context, String str) {
     ));
   }
   Clipboard.setData(ClipboardData(text: str));
+}
+
+Future<void> shareText(String text) async {
+  try {
+    await Share.share(text);
+  } catch (_) {
+    Log('utils:shareText', '[ERROR] Error sharing text.');
+  }
 }
 
 /// Convers a null, a string or a double into a Decimal.
@@ -90,6 +104,12 @@ String getCoinTicker(String abbr) {
     abbr = abbr.replaceAll('-$suffix', '').replaceAll('_$suffix', '');
   }
   return abbr;
+}
+
+String getCoinTickerRegex(String abbr) {
+  final String suffixes = appConfig.protocolSuffixes.join('|');
+  final RegExp regExp = RegExp('(_|-)($suffixes)');
+  return abbr.replaceAll(regExp, '');
 }
 
 Rational deci2rat(Decimal decimal) {
@@ -691,6 +711,35 @@ class PaymentUriInfo {
   final String amount;
 }
 
+/// Returns the value of a [parameter] from the [address].
+/// Returns null if the [parameter] is not found.
+/// [address] is expected to be a blockchain address or URL with parameters,
+/// e.g. '?amount=123'
+///
+/// Example usage:
+/// ```dart
+/// getParameterValue('litecoin:NPZcaiggQTy6uxL?amount=0.2', 'amount') == '0.2'
+/// ```
+String getParameterValue(String address, String parameter) {
+  final RegExp regExp = RegExp('(?<=$parameter=)(.*?)(?=&|\$)');
+  final RegExpMatch match = regExp.firstMatch(address);
+  return match?.group(0);
+}
+
+/// Returns the address from the [uri].
+/// Returns the [uri] if no address is found.
+/// [uri] is expected to be a blockchain address or URL with parameters,
+/// e.g. '?amount=123'
+/// Example usage:
+/// ```dart
+/// getAddressFromUri('litecoin:NPZcaiggQTy6uxL?amount=0.2') == 'NPZcaiggQTy6uxL'
+/// ```
+String getAddressFromUri(String uri) {
+  final RegExp regExp = RegExp(r'(?<=:)(.*?)(?=\?|$)');
+  final RegExpMatch match = regExp.firstMatch(uri);
+  return match?.group(0) ?? uri.split(':').last;
+}
+
 void showUriDetailsDialog(
     BuildContext context, PaymentUriInfo uriInfo, Function callbackIfAccepted) {
   if (uriInfo == null) return;
@@ -810,6 +859,24 @@ String getRandomWord() {
   return words[Random().nextInt(words.length)];
 }
 
+void mustRunInMainThread({String message}) {
+  final isMainThread = Isolate.current.debugName == 'main';
+  if (!isMainThread) {
+    throw Exception(
+      message ?? 'Method must be called on the main thread',
+    );
+  }
+}
+
+void mustRunInIsolate([String message]) {
+  final isMainThread = Isolate.current.debugName == 'main';
+  if (isMainThread) {
+    throw Exception(
+      message ?? 'Method must be called in an isolate',
+    );
+  }
+}
+
 List<Coin> filterCoinsByQuery(List<Coin> coins, String query,
     {String type = ''}) {
   if (coins == null || coins.isEmpty) return [];
@@ -927,4 +994,17 @@ bool isCoinPresent(Coin coin, String query, String filter) {
   return coin.type.name.toLowerCase().contains(filter.toLowerCase()) &&
       (coin.abbr.toLowerCase().contains(query.trim().toLowerCase()) ||
           coin.name.toLowerCase().contains(query.trim().toLowerCase()));
+}
+
+String formatAddressShort(String address) {
+  if (address == null) return null;
+  if (address.length < 10) return address;
+  return address.substring(0, 5) +
+      '...' +
+      address.substring(address.length - 5);
+}
+
+String flattenParagraphs(String text) {
+  if (text == null) return null;
+  return text.replaceAll('\n', ' ').replaceAll('\r', ' ').replaceAll('\t', ' ');
 }

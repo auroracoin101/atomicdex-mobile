@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../model/feed_provider.dart';
@@ -9,55 +11,68 @@ class AppConfig {
   int get maxCoinsEnabledAndroid => 50;
   int get maxCoinEnabledIOS => 20;
 
+  String get transactionWarningInfoUrl =>
+      'https://komodoplatform.com/en/blog/preventing-address-poisoning';
+
   // number of decimal places for trade amount input fields
   int get tradeFormPrecision => 8;
 
   int get batteryLevelLow => 30; // show warnign on swap confirmation page
   int get batteryLevelCritical => 20; // swaps disabled
 
+  final String minDartVersion = '2.14.0';
+
+  bool get isDartSdkVersionSupported {
+    final currentVersion = RegExp(r'(\d+\.\d+\.\d+)')
+        .firstMatch(Platform.version)
+        ?.group(1)
+        ?.split('.')
+        ?.map((e) => int.parse(e))
+        ?.toList();
+
+    final minVersion =
+        minDartVersion.split('.').map((e) => int.parse(e)).toList();
+
+    if (currentVersion == null) return false;
+
+    for (var i = 0; i < minVersion.length; i++) {
+      if (currentVersion[i] < minVersion[i]) return false;
+    }
+
+    return true;
+  }
+
   // Brand config below
 
-  String get appName => 'atomicDEX';
+  String get appName => 'Komodo Wallet';
   String get appCompanyLong => 'Komodo Platform';
   String get appCompanyShort => 'Komodo';
 
-  List<String> get defaultCoins => ['KMD', 'BTC', 'VOTE2023'];
-  List<String> get coinsFiat => ['BTC', 'KMD'];
+  List<String> get defaultCoins => ['KMD', 'BTC-segwit'];
+  List<String> get coinsFiat => ['BTC-segwit', 'KMD'];
   List<String> get walletOnlyCoins => [
         'ARRR-BEP20',
         'ATOM',
-        'RBTC',
-        'OSMO',
-        'BET',
-        'BOTS',
+        'BBK',
         'CELR-ARB20',
-        'CRYPTO',
-        'HODL',
-        'JUMBLR',
-        'LUNA-ERC20',
-        'LUNA-BEP20',
-        'LUNA-HRC20',
-        'LUNA-PLG20',
-        'MSHARK',
+        'GALA-BEP20',
+        'KIP0002',
+        'KIP0003',
+        'KIP0004',
+        'MINU-BEP20',
+        'NVC',
+        'OSMO',
         'PAXG-ERC20',
-        'ETH-ARB20',
-        'ETHK-OPT20',
-        'ETHR-ARB20',
+        'PINK',
+        'POT',
+        'RBTC',
+        'RDD',
+        'SXP-BEP20',
+        'SXP-ERC20',
         'USDT-ARB20',
         'USDT-ERC20',
-        'MGW',
-        'DEX',
-        'PANGEA',
-        'REVS',
-        'SUPERNET',
-        'NVC',
-        'UST-ERC20',
-        'UST-BEP20',
-        'UST-HRC20',
-        'UST-PLG20',
+        'VOTE2023',
         'XPM',
-        'XVC-OLD',
-        'VOTE2023'
       ];
 
   List<String> get protocolSuffixes => [
@@ -75,8 +90,14 @@ class AppConfig {
         'OLD',
         'IBC_IRIS',
         'segwit',
+        'ZHTLC',
       ];
-  List<String> get defaultTestCoins => ['RICK', 'MORTY'];
+  List<String> get defaultTestCoins => [
+        'DOC',
+        'MARTY',
+        'ZOMBIE',
+      ];
+
   Map<String, String> get allProtocolNames => {
         'utxo': 'UTXO',
         'smartChain': 'Smart Chain',
@@ -94,6 +115,7 @@ class AppConfig {
         'etc': 'Ethereum Classic (ETC)',
         'sbch': 'SmartBCH (SBCH)',
         'slp': 'SLP Tokens',
+        'zhtlc': 'ZHTLC',
         'iris': 'Iris Network',
         'cosmos': 'Cosmos Network',
       };
@@ -103,6 +125,7 @@ class AppConfig {
   Map<String, List<double>> standardFees = {
     'utxo': [0],
     'smartChain': [0],
+    'zhtlc': [0],
     'erc': [0, 0],
     'bep': [0, 0],
     'qrc': [0, 0],
@@ -137,7 +160,7 @@ class AppConfig {
   // endpoint source code:
   // https://github.com/KomodoPlatform/discord_feed_parser
   bool get isFeedEnabled => true;
-  String get feedProviderSourceUrl => 'https://komodo.live/messages';
+  String get feedProviderSourceUrl => 'https://komodo.earth/messages';
   NewsSource get defaultNewsSource => NewsSource(
         name: 'Komodo #official-news',
         url:
@@ -149,24 +172,25 @@ class AppConfig {
   // endpoint source code (currently same as news feed endpoint):
   // https://github.com/KomodoPlatform/discord_feed_parser
   bool get isUpdateCheckerEnabled => true;
-  String get updateCheckerEndpoint => 'https://komodo.live/adexversion';
+  String get updateCheckerEndpoint => 'https://komodo.earth/adexversion';
 
   // endpoint source code:
   // https://github.com/KomodoPlatform/mobile_endpoints_proxy/blob/main/main.py#L113
-  String get fiatPricesEndpoint => 'https://rates.komodo.live/api/v1/usd_rates';
+  String get fiatPricesEndpoint =>
+      'https://defi-stats.komodo.earth/api/v3/rates/fixer_io';
 
   // endpoint source code:
   // https://github.com/KomodoPlatform/mobile_endpoints_proxy/blob/main/main.py#L95
   String get cryptoPricesEndpoint =>
-      'https://prices.komodo.live:1313/api/v2/tickers?expire_at=600';
+      'https://prices.komodo.earth/api/v2/tickers?expire_at=600';
   String get cryptoPricesFallback =>
       'https://api.coingecko.com/api/v3/simple/price?ids=';
 
   // endpoint source code:
   // https://github.com/KomodoPlatform/CexPricesEndpoint
   String get candlestickTickersList =>
-      'https://komodo.live:3333/api/v1/ohlc/tickers_list';
-  String get candlestickData => 'https://komodo.live:3333/api/v1/ohlc';
+      'https://komodo.earth:3333/api/v1/ohlc/tickers_list';
+  String get candlestickData => 'https://komodo.earth:3333/api/v1/ohlc';
 
   // At the moment (8/24/2020) tx history is disabled on parity nodes,
   // so we switching ETH/ERC20, BNB/BEP20 tx history to
@@ -177,30 +201,29 @@ class AppConfig {
   // '/api/v1/erc_tx_history/{token}/{address}' - ERC20 transaction history
   // endpoint source code:
   // https://github.com/KomodoPlatform/etherscan-mm2-proxy
-  String get ethUrl => 'https://komodo.live:3334/api/v1/eth_tx_history';
-  String get ercUrl => 'https://komodo.live:3334/api/v2/erc_tx_history';
-  String get bnbUrl => 'https://komodo.live:3334/api/v1/bnb_tx_history';
-  String get bepUrl => 'https://komodo.live:3334/api/v2/bep_tx_history';
-  String get maticUrl => 'https://komodo.live:3334/api/v1/plg_tx_history';
-  String get plgUrl => 'https://komodo.live:3334/api/v2/plg_tx_history';
-  String get fantomUrl => 'https://komodo.live:3334/api/v1/ftm_tx_history';
-  String get ftmUrl => 'https://komodo.live:3334/api/v2/ftm_tx_history';
-  String get oneUrl => 'https://komodo.live:3334/api/v1/hrc_tx_history';
-  String get hrcUrl => 'https://komodo.live:3334/api/v2/hrc_tx_history';
-  String get movrUrl => 'https://komodo.live:3334/api/v1/moonriver_tx_history';
-  String get mvrUrl => 'https://komodo.live:3334/api/v2/moonriver_tx_history';
-  String get htUrl => 'https://komodo.live:3334/api/v1/heco_tx_history';
-  String get hcoUrl => 'https://komodo.live:3334/api/v2/heco_tx_history';
-  String get kcsUrl => 'https://komodo.live:3334/api/v1/krc_tx_history';
-  String get krcUrl => 'https://komodo.live:3334/api/v2/krc_tx_history';
-  String get etcUrl => 'https://komodo.live:3334/api/v1/etc_tx_history';
-  String get sbchUrl => 'https://komodo.live:3334/api/v1/sbch_tx_history';
-  String get ubqUrl => 'https://komodo.live:3334/api/v1/ubq_tx_history';
-  String get avaxUrl => 'https://komodo.live:3334/api/v1/avx_tx_history';
-  String get avxUrl => 'https://komodo.live:3334/api/v2/avx_tx_history';
+  String get ethUrl => 'https://komodo.earth:3334/api/v1/eth_tx_history';
+  String get ercUrl => 'https://komodo.earth:3334/api/v2/erc_tx_history';
+  String get bnbUrl => 'https://komodo.earth:3334/api/v1/bnb_tx_history';
+  String get bepUrl => 'https://komodo.earth:3334/api/v2/bep_tx_history';
+  String get maticUrl => 'https://komodo.earth:3334/api/v1/plg_tx_history';
+  String get plgUrl => 'https://komodo.earth:3334/api/v2/plg_tx_history';
+  String get fantomUrl => 'https://komodo.earth:3334/api/v1/ftm_tx_history';
+  String get ftmUrl => 'https://komodo.earth:3334/api/v2/ftm_tx_history';
+  String get oneUrl => 'https://komodo.earth:3334/api/v1/hrc_tx_history';
+  String get hrcUrl => 'https://komodo.earth:3334/api/v2/hrc_tx_history';
+  String get movrUrl => 'https://komodo.earth:3334/api/v1/moonriver_tx_history';
+  String get mvrUrl => 'https://komodo.earth:3334/api/v2/moonriver_tx_history';
+  String get htUrl => 'https://komodo.earth:3334/api/v1/heco_tx_history';
+  String get hcoUrl => 'https://komodo.earth:3334/api/v2/heco_tx_history';
+  String get kcsUrl => 'https://komodo.earth:3334/api/v1/krc_tx_history';
+  String get krcUrl => 'https://komodo.earth:3334/api/v2/krc_tx_history';
+  String get etcUrl => 'https://komodo.earth:3334/api/v1/etc_tx_history';
+  String get sbchUrl => 'https://komodo.earth:3334/api/v1/sbch_tx_history';
+  String get ubqUrl => 'https://komodo.earth:3334/api/v1/ubq_tx_history';
+  String get avaxUrl => 'https://komodo.earth:3334/api/v1/avx_tx_history';
+  String get avxUrl => 'https://komodo.earth:3334/api/v2/avx_tx_history';
 
   /// We're using different rpc ports for different wallet packages
   /// in order to allow multiple wallets to run simultaneously.
   int get rpcPort => 7783;
 }
-

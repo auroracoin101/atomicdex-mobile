@@ -116,7 +116,8 @@ class _AmountAddressStepState extends State<AmountAddressStep> {
             // Temporary disable custom fee for qrc20 tokens
             if (widget.coinBalance.coin.type != CoinType.qrc &&
                 widget.coinBalance.coin.type != CoinType.cosmos &&
-                widget.coinBalance.coin.type != CoinType.iris)
+                widget.coinBalance.coin.type != CoinType.iris &&
+                widget.coinBalance.coin.type != CoinType.zhtlc)
               CustomFee(
                 coin: widget.coinBalance.coin,
                 amount: widget.amountController.text,
@@ -185,6 +186,10 @@ class _AmountAddressStepState extends State<AmountAddressStep> {
 
   void handleQrAdress(String address) {
     widget.addressController.text = address;
+  }
+
+  set qrAmount(String amount) {
+    widget.amountController.text = amount;
   }
 
   void showWrongCoinDialog(PaymentUriInfo uriInfo) {
@@ -300,8 +305,9 @@ class _AmountAddressStepState extends State<AmountAddressStep> {
         barcode = 'Error';
       });
     } else {
-      final address = result;
-      final uri = Uri.tryParse(address.trim());
+      final String address = getAddressFromUri(result.trim());
+      final String amount = getParameterValue(result.trim(), 'amount');
+      final Uri uri = Uri.tryParse(result.trim());
 
       setState(() {
         final PaymentUriInfo uriInfo = PaymentUriInfo.fromUri(uri);
@@ -309,6 +315,7 @@ class _AmountAddressStepState extends State<AmountAddressStep> {
           handlePaymentData(uriInfo);
         } else {
           handleQrAdress(address);
+          qrAmount = amount ?? '';
         }
       });
     }

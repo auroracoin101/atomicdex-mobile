@@ -37,8 +37,8 @@ android {
 
     defaultConfig {
         applicationId "com.komodoplatform.atomicdex"
-        minSdkVersion 24
-        targetSdkVersion 31
+        minSdkVersion 28
+        targetSdkVersion 33
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         buildConfigField "Long", "BUILD_TIME", "" + System.currentTimeMillis() + "L"

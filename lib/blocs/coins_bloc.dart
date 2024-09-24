@@ -4,6 +4,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:decimal/decimal.dart';
+import 'package:komodo_dex/packages/z_coin_activation/bloc/z_coin_activation_api.dart';
+import 'package:komodo_dex/packages/z_coin_activation/bloc/z_coin_activation_repository.dart';
+import 'package:komodo_dex/model/wallet.dart';
 
 import '../app_config/app_config.dart';
 import '../blocs/main_bloc.dart';
@@ -15,6 +18,7 @@ import '../model/cex_provider.dart';
 import '../model/coin.dart';
 import '../model/coin_balance.dart';
 import '../model/coin_to_kick_start.dart';
+import '../model/coin_type.dart';
 import '../model/disable_coin.dart';
 import '../model/error_code.dart';
 import '../model/error_string.dart';
@@ -41,11 +45,16 @@ class CoinsBloc implements BlocBase {
       _saveWalletSnapshot();
     });
 
+    // final ZCoinActivationBloc zCoinActivationBloc =
+    //     BlocProvider.of<ZCoinActivationBloc>(appStateKey.currentContext);
+
     jobService.install(
         'retryActivatingSuspended',
         Duration(minutes: 1).inSeconds.toDouble(),
         (j) => retryActivatingSuspendedCoins());
   }
+
+  final _zCoinRepository = ZCoinActivationRepository(ZCoinActivationApi());
 
   LinkedHashMap<String, Coin> _knownCoins;
 
@@ -62,6 +71,9 @@ class CoinsBloc implements BlocBase {
   Stream<List<CoinBalance>> get outCoins => _coinsController.stream;
 
   dynamic transactions;
+
+  Transactions get transactionsOrNull =>
+      transactions is Transactions ? transactions : null;
 
   // Streams to handle the list coin
   final StreamController<dynamic> _transactionsController =
@@ -133,7 +145,7 @@ class CoinsBloc implements BlocBase {
   }
 
   Coin getKnownCoinByAbbr(String abbr) {
-    return knownCoins.containsKey(abbr) ? knownCoins[abbr] : null;
+    return (knownCoins?.containsKey(abbr) ?? false) ? knownCoins[abbr] : null;
   }
 
   CoinBalance getBalanceByAbbr(String abbr) {
@@ -151,13 +163,12 @@ class CoinsBloc implements BlocBase {
   }
 
   Future<void> initCoinBeforeActivation() async {
-    final List<CoinToActivate> coinBeforeActivation = <CoinToActivate>[];
+    final inactiveCoins = await getAllNotActiveCoins();
 
-    for (Coin coin in await getAllNotActiveCoins()) {
-      coinBeforeActivation.add(CoinToActivate(coin: coin, isActive: false));
-    }
-    this.coinBeforeActivation = coinBeforeActivation;
-    _inCoinBeforeActivation.add(this.coinBeforeActivation);
+    coinBeforeActivation = inactiveCoins.values.map<CoinToActivate>((e) {
+      return CoinToActivate(coin: e, isActive: false);
+    }).toList();
+    _inCoinBeforeActivation.add(coinBeforeActivation);
   }
 
   bool canActivate(List<CoinToActivate> list) {
@@ -262,6 +273,8 @@ class CoinsBloc implements BlocBase {
 
           counter++;
         }
+        coinBeforeActivation
+            .add(CoinToActivate(coin: coin, isActive: isActive));
       } else {
         coinBeforeActivation.add(CoinToActivate(coin: coin, isActive: false));
       }
@@ -304,6 +317,10 @@ class CoinsBloc implements BlocBase {
           .removeWhere((CoinBalance item) => coin.abbr == item.coin.abbr);
       updateCoins(coinBalance);
       await deactivateCoins(<Coin>[coin]);
+
+      if (coin.type == CoinType.zhtlc) {
+        await _zCoinRepository.legacyCoinsBlocDisableLocallyCallback(coin.abbr);
+      }
     }
   }
 
@@ -379,37 +396,44 @@ class CoinsBloc implements BlocBase {
       CoinBalance coinBalance, int limit, String fromId) async {
     Coin coin = coinBalance.coin;
     try {
-      dynamic transactions;
+      dynamic transactionData;
 
       if (isErcType(coin)) {
-        transactions = await getErcTransactions.getTransactions(
-            coin: coin, fromId: fromId);
+        transactionData = await getErcTransactions.getTransactions(
+          coin: coin,
+          fromId: fromId,
+        );
       } else {
-        transactions = await MM.getTransactions(mmSe.client,
-            GetTxHistory(coin: coin.abbr, limit: limit, fromId: fromId));
+        transactionData = await MM.getTransactions(
+          mmSe.client,
+          GetTxHistory(coin: coin.abbr, limit: limit, fromId: fromId),
+        );
       }
 
-      if (transactions is Transactions) {
-        transactions.camouflageIfNeeded();
+      if (transactionData is Transactions && transactionData.result != null) {
+        transactionData.camouflageIfNeeded();
 
-        if (fromId == null || fromId.isEmpty) {
-          this.transactions = transactions;
-        } else {
-          this.transactions.result.fromId = transactions.result.fromId;
-          this.transactions.result.limit = transactions.result.limit;
-          this.transactions.result.skipped = transactions.result.skipped;
-          this.transactions.result.total = transactions.result.total;
-          this
-              .transactions
-              .result
-              .transactions
-              .addAll(transactions.result.transactions);
-        }
-        _inTransactions.add(this.transactions);
-      } else if (transactions is ErrorCode) {
-        _inTransactions.add(transactions);
-        return transactions;
+        final thisTransactions = transactions?.result?.transactions;
+
+        final mustMergeCurrentCoin = fromId != null &&
+            (thisTransactions is List<Transaction> &&
+                    (thisTransactions
+                        .any((Transaction tx) => tx.coin == coin.abbr)) ??
+                false);
+
+        transactionData.result?.transactions = [
+          if (mustMergeCurrentCoin) ...(thisTransactions ?? []),
+          ...(transactionData.result?.transactions ?? [])
+        ]..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+        transactions = transactionData;
+      } else if (transactionData is ErrorCode) {
+        Log(
+          'coins_bloc:updateTransactions',
+          'Failed to get transactions: $coin: ${transactionData.toJson()}',
+        );
       }
+      _inTransactions.add(transactionData);
     } catch (e) {
       Log('coins_bloc:244', e);
       rethrow;
@@ -451,7 +475,7 @@ class CoinsBloc implements BlocBase {
 
   /// Handle the coins user has picked for activation.
   /// Also used for coin activations during the application startup.
-  Future<void> enableCoins(List<Coin> coins) async {
+  Future<void> enableCoins(List<Coin> coins, {initialization = false}) async {
     await pauseUntil(() => !_coinsLock, maxMs: 3000);
     _coinsLock = true;
 
@@ -468,8 +492,23 @@ class CoinsBloc implements BlocBase {
     }
     preEnabledCoins = preEnabledCoins.toSet().toList();
 
+    final List<String> requestedZCoins = coins
+        .where((c) => c.type == CoinType.zhtlc)
+        .map((c) => c.abbr)
+        .toList();
+
+    await _zCoinRepository.addRequestedActivatedCoins(requestedZCoins);
+
+    // await _zCoinRepository.setRequestedActivatedCoins(requestedZCoins);
+    // _zCoinRepository.activateRequestedZCoins().forEach((_) {
+    //   Log('coins_bloc:enableCoins', 'Activating requested ZCoins');
+    // });
+
+    coins.removeWhere((coin) => requestedZCoins.contains(coin.abbr));
+
     // remove needed-parent-coins from the main coin list
     coins.removeWhere((coin) => preEnabledCoins.contains(coin));
+
     // activate remaining coins using a batch request to speed up the coin activation.
     final List<Map<String, dynamic>> batch = [];
     for (Coin coin in coins) {
@@ -518,13 +557,41 @@ class CoinsBloc implements BlocBase {
       updateOneCoin(cb);
     }
 
-    await _syncCoinsStateWithApi();
+    await syncCoinsStateWithApi();
 
     currentCoinActivate(null);
     _coinsLock = false;
   }
 
-  Future<void> _syncCoinsStateWithApi() async {
+  /// Used by external services that need to integrate with the coins bloc
+  /// to register a coin as active in the frontend after it has been activated
+  /// in the backend by an external service.
+  Future<void> setupCoinAfterActivation(Coin coin) async {
+    Db.coinActive(coin);
+    final balance = await MM.getBalance(GetBalance(coin: coin.abbr));
+
+    if (balance == null) {
+      Log('coins_bloc:549', 'balance is null');
+      return;
+    }
+
+    balance.camouflageIfNeeded();
+
+    final cb = CoinBalance(coin, balance);
+
+    final double preSavedUsdBalance = getBalanceByAbbr(coin.abbr)?.balanceUSD;
+    cb.balanceUSD = preSavedUsdBalance ?? 0;
+
+    updateOneCoin(cb);
+
+    await syncCoinsStateWithApi();
+
+    if (currentActiveCoin?.coin?.abbr == coin.abbr) {
+      currentCoinActivate(null);
+    }
+  }
+
+  Future<void> syncCoinsStateWithApi([bool ignoreZcash = true]) async {
     final List<dynamic> apiCoinsJson = await MM.getEnabledCoins();
     final List<String> apiCoins = [];
 
@@ -535,7 +602,11 @@ class CoinsBloc implements BlocBase {
     for (CoinBalance balance in coinBalance) {
       bool shouldSuspend = !apiCoins.contains(balance.coin.abbr);
 
-      if (shouldSuspend) {
+      if (balance.coin.type == CoinType.zhtlc && ignoreZcash) {
+        // ignore zhtlc coins because they activate later than the
+        // other coins and they are handled in zcashBloc
+        continue;
+      } else if (shouldSuspend) {
         balance.coin.suspended = true;
 
         Log('coins_bloc]',
@@ -587,24 +658,35 @@ class CoinsBloc implements BlocBase {
     return ret;
   }
 
-  Future<List<Coin>> getAllNotActiveCoins() async {
-    final all = (await coins).values.toList();
-    final active = await Db.activeCoins;
-    final notActive = <Coin>[];
+  Future<LinkedHashMap<String, Coin>> getAllNotActiveCoins() async {
+    final LinkedHashMap<String, Coin> all = await coins;
+    final Set<String> active = await Db.activeCoins;
 
-    for (Coin coin in all) {
-      if (active.contains(coin.abbr)) continue;
-      notActive.add(coin);
-    }
+    // Get all coin abbreviations
+    Set<String> allCoinAbbrs = all.keys.toSet();
 
-    notActive.sort((Coin a, Coin b) =>
-        a.swapContractAddress.compareTo(b.swapContractAddress));
-    return notActive;
+    // Find the difference
+    Set<String> notActiveAbbrs = allCoinAbbrs.difference(active);
+
+    final pendingZCoins = await _zCoinRepository.outstandingZCoinActivations();
+
+    // remove z-coin that are currently enabling from activation list
+    notActiveAbbrs.removeAll(pendingZCoins);
+
+    final List<String> sorted = notActiveAbbrs.toList()
+      ..sort((a, b) =>
+          all[a].swapContractAddress.compareTo(all[b].swapContractAddress));
+
+    final hashMap = LinkedHashMap<String, Coin>();
+
+    hashMap.addEntries(sorted.map((e) => MapEntry(e, all[e])));
+
+    return hashMap;
   }
 
   Future<List<Coin>> getAllNotActiveCoinsWithFilter(
       String query, String type) async {
-    List<Coin> coinsActivate = await getAllNotActiveCoins();
+    List<Coin> coinsActivate = (await getAllNotActiveCoins()).values.toList();
     coinsActivate = filterCoinsByQuery(coinsActivate, query, type: type);
     return coinsActivate;
   }
@@ -663,7 +745,7 @@ class CoinsBloc implements BlocBase {
       coins.add(coinToActivate.coin);
     }
     await coinsBloc.enableCoins(coins);
-    updateCoinBalances();
+    await updateCoinBalances();
 
     coinsBloc.setCloseViewSelectCoin(true);
   }
@@ -753,7 +835,7 @@ class CoinsBloc implements BlocBase {
 
       if (transactions is Transactions) {
         transactions.camouflageIfNeeded();
-        if (transactions.result.transactions.isNotEmpty) {
+        if ((transactions.result?.transactions ?? []).isNotEmpty) {
           return transactions.result.transactions[0];
         }
         return null;
@@ -781,8 +863,8 @@ class CoinsBloc implements BlocBase {
     _walletSnapshotInProgress = false;
   }
 
-  Future<void> loadWalletSnapshot() async {
-    final String jsonStr = await Db.getWalletSnapshot();
+  Future<void> loadWalletSnapshot({Wallet wallet}) async {
+    final String jsonStr = await Db.getWalletSnapshot(wallet: wallet);
     if (jsonStr == null) return;
 
     List<dynamic> items;
@@ -794,10 +876,10 @@ class CoinsBloc implements BlocBase {
 
     if (items == null || items.isEmpty) return;
 
+    final currentCoins = await Db.activeCoins;
     final List<CoinBalance> list = [];
     for (dynamic item in items) {
       final tmp = CoinBalance.fromJson(item);
-      final currentCoins = await Db.activeCoins;
       final abbr = tmp.coin.abbr;
       if (!currentCoins.contains(abbr)) {
         Log('coins_bloc',

@@ -83,8 +83,8 @@ Widget _buildFaucetResponse({
   @required BuildContext context,
   @required Map<String, dynamic> response,
 }) {
-  switch (response['Status']) {
-    case 'Success':
+  switch (response['status']) {
+    case 'success':
       return Column(
         children: <Widget>[
           Text(
@@ -96,13 +96,13 @@ Widget _buildFaucetResponse({
           ),
           SizedBox(height: 16),
           Text(
-            response['Result']['Message'],
+            response['result']['message'],
             style: Theme.of(context).textTheme.bodyText1,
           ),
         ],
       );
 
-    case 'Error':
+    case 'error':
       return Column(
         children: <Widget>[
           Text(
@@ -114,7 +114,7 @@ Widget _buildFaucetResponse({
           ),
           SizedBox(height: 16),
           Text(
-            response['Result']['Message'],
+            response['result']['message'],
             style: Theme.of(context).textTheme.bodyText1,
           ),
         ],
@@ -124,7 +124,7 @@ Widget _buildFaucetResponse({
       return Column(
         children: <Widget>[
           Text(
-            response['Status'].toUpperCase(),
+            response['status'].toUpperCase(),
             style: TextStyle(
               color: Colors.orange[300],
               fontSize: 20,
@@ -132,7 +132,7 @@ Widget _buildFaucetResponse({
           ),
           SizedBox(height: 16),
           Text(
-            response['Result']['Message'],
+            response['result']['message'],
             style: Theme.of(context).textTheme.bodyText1,
           ),
         ],
@@ -145,16 +145,16 @@ Future<Map<String, dynamic>> callFaucet(String coin, String address) async {
   http.Response response;
   try {
     response = await http
-        .get(Uri.parse('https://faucet.komodo.live/faucet/$coin/$address'))
+        .get(Uri.parse('https://faucet.komodo.earth/faucet/$coin/$address'))
         .timeout(const Duration(seconds: 30), onTimeout: () {
       throw AppLocalizations().faucetTimedOut;
     });
     body = response.body;
   } catch (e) {
     return <String, dynamic>{
-      'Status': 'Error',
-      'Result': <String, String>{
-        'Message': e,
+      'status': 'error',
+      'result': <String, String>{
+        'message': e,
       },
     };
   }
@@ -163,9 +163,9 @@ Future<Map<String, dynamic>> callFaucet(String coin, String address) async {
     return jsonDecode(body);
   } catch (e) {
     return <String, dynamic>{
-      'Status': 'Error',
-      'Result': <String, String>{
-        'Message': e,
+      'status': 'error',
+      'result': <String, String>{
+        'message': e,
       },
     };
   }

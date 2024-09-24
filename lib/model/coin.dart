@@ -2,6 +2,7 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
+import 'package:komodo_dex/app_config/coins_updater.dart';
 
 import '../app_config/app_config.dart';
 import '../app_config/coin_converter.dart';
@@ -33,8 +34,7 @@ Future<LinkedHashMap<String, Coin>> get coins async {
   _coinsInvoked = true;
 
   Log('coin:29', 'Loading coins.json…');
-  const ci = 'assets/coins.json';
-  final cis = await rootBundle.loadString(ci, cache: false);
+  final String cis = await CoinUpdater().getCoins();
   final List<dynamic> cil = json.decode(cis);
   final Map<String, Map<String, dynamic>> cim = {};
   for (dynamic js in cil) cim[js['coin']] = Map<String, dynamic>.from(js);
@@ -111,9 +111,13 @@ class Coin {
     if (config['bchd_urls'] != null) {
       bchdUrls = List<String>.from(config['bchd_urls']);
     }
+    if (config['light_wallet_d_servers'] != null) {
+      lightWalletDServers = List<String>.from(config['light_wallet_d_servers']);
+    }
     explorerTxUrl = config['explorer_tx_url'] ?? '';
     explorerAddressUrl = config['explorer_address_url'] ?? '';
     decimals = init['decimals'];
+    orderbookTicker = config['orderbook_ticker'];
   }
 
   // Coin suspended if was activated by user earlier,
@@ -141,6 +145,7 @@ class Coin {
   bool testCoin;
   String colorCoin;
   List<String> bchdUrls;
+  List<String> lightWalletDServers;
   List<Server> serverList;
   String explorerUrl;
   String swapContractAddress;
@@ -162,6 +167,7 @@ class Coin {
   String explorerTxUrl;
   String explorerAddressUrl;
   int decimals;
+  String orderbookTicker;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'type': type.name ?? '',
@@ -188,6 +194,10 @@ class Coin {
         if (decimals != null) 'decimals': decimals,
         if (bchdUrls != null)
           'bchd_urls': List<dynamic>.from(bchdUrls.map<String>((x) => x)),
+        if (lightWalletDServers != null)
+          'light_wallet_d_servers':
+              List<dynamic>.from(lightWalletDServers.map<String>((x) => x)),
+        if (orderbookTicker != null) 'orderbook_ticker': orderbookTicker
       };
 
   String getTxFeeSatoshi() {
@@ -250,6 +260,8 @@ class ProtocolData {
     decimals = json['decimals'];
     tokenId = json['token_id'];
     requiredConfirmations = json['required_confirmations'];
+    if (json['check_point_block'] != null)
+      checkPointBlock = CheckPointBlock.fromJson(json['check_point_block']);
   }
 
   String platform;
@@ -258,6 +270,7 @@ class ProtocolData {
   int decimals;
   int requiredConfirmations;
   String tokenId;
+  CheckPointBlock checkPointBlock;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -268,6 +281,33 @@ class ProtocolData {
       if (tokenId != null) 'token_id': tokenId,
       if (requiredConfirmations != null)
         'required_confirmations': requiredConfirmations,
+      if (checkPointBlock != null)
+        'check_point_block': checkPointBlock.toJson(),
     };
+  }
+}
+
+class CheckPointBlock {
+  int height;
+  int time;
+  String hash;
+  String saplingTree;
+
+  CheckPointBlock({this.height, this.time, this.hash, this.saplingTree});
+
+  CheckPointBlock.fromJson(Map<String, dynamic> json) {
+    height = json['height'];
+    time = json['time'];
+    hash = json['hash'];
+    saplingTree = json['sapling_tree'];
+  }
+
+  Map<String, dynamic> toJson() {
+    final Map<String, dynamic> data = <String, dynamic>{};
+    data['height'] = height;
+    data['time'] = time;
+    data['hash'] = hash;
+    data['sapling_tree'] = saplingTree;
+    return data;
   }
 }

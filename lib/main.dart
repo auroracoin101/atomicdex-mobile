@@ -1,8 +1,20 @@
 import 'dart:async';
+
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_bloc/flutter_bloc.dart' as real_bloc;
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:komodo_dex/packages/z_coin_activation/bloc/z_coin_activation_bloc.dart';
+import 'package:komodo_dex/packages/z_coin_activation/bloc/z_coin_activation_event.dart';
+import 'package:komodo_dex/packages/z_coin_activation/bloc/z_coin_activation_state.dart';
+import 'package:komodo_dex/packages/z_coin_activation/bloc/z_coin_notifications.dart';
+import 'package:komodo_dex/packages/z_coin_activation/widgets/z_coin_status_list_tile.dart';
+import 'package:komodo_dex/services/mm.dart';
+import 'package:local_auth/local_auth.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../app_config/app_config.dart';
 import '../blocs/authenticate_bloc.dart';
 import '../blocs/coins_bloc.dart';
@@ -32,27 +44,51 @@ import '../services/mm_service.dart';
 import '../utils/log.dart';
 import '../widgets/bloc_provider.dart';
 import '../widgets/build_red_dot.dart';
-import 'package:local_auth/local_auth.dart';
-import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
 import 'app_config/theme_data.dart';
 import 'model/multi_order_provider.dart';
 import 'model/startup_provider.dart';
+import 'packages/rebranding/rebranding_provider.dart';
 import 'utils/utils.dart';
 import 'widgets/shared_preferences_builder.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  applicationDocumentsDirectory; // Start getting the application directory.
-  startApp();
+
+  // Ensure the Dart version is >= 2.14.0
+  assert(appConfig.isDartSdkVersionSupported, '''
+    Your Dart SDK version is not supported. 
+    Please update your Dart SDK to >= ${appConfig.minDartVersion}.
+  ''');
+
+  await applicationDocumentsDirectory;
+  await Log.init();
+
+  await Log.appendRawLog('=-' * 20);
+  final startupTime = DateTime.now();
+
+  Log('App start time:', startupTime.toIso8601String());
+
+  await startApp();
+
+  // Log('App end time:', DateTime.now().toIso8601String());
+  // Log('App closed after:', DateTime.now().difference(startupTime));
+  await Log.appendRawLog('=-' * 20);
 }
 
 Future<void> startApp() async {
+  // TODO: Request permissions right before it's needed when user is
+  // activating Z-Coin. Bigger chance that user will accept it.
+  await ZCoinProgressNotifications.initNotifications();
   try {
     mmSe.metrics();
     startup.start();
-    return runApp(_myAppWithProviders);
+
+    return runApp(
+      real_bloc.BlocProvider(
+        create: (context) => ZCoinActivationBloc(),
+        child: _myAppWithProviders,
+      ),
+    );
   } catch (e) {
     Log('main:46', 'startApp] $e');
     rethrow;
@@ -100,7 +136,10 @@ BlocProvider<AuthenticateBloc> _myAppWithProviders =
             ),
             ChangeNotifierProvider(
               create: (context) => walletSecuritySettingsProvider,
-            )
+            ),
+            ChangeNotifierProvider(
+              create: (context) => RebrandingProvider(),
+            ),
           ],
           child: const MyApp(),
         ));
@@ -148,6 +187,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     super.initState();
     _initCheckNetworkStatus();
     WidgetsBinding.instance.addObserver(this);
+
+    MM.untilRpcIsUp().then((_) => _requestResync());
   }
 
   @override
@@ -177,9 +218,18 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         Log('main', 'lifecycle: resumed');
         mainBloc.isInBackground = false;
         lockService.lockSignal(context);
-        await mmSe.handleWakeUp();
+        final didNeedWakeUp = await mmSe.wakeUpSuspendedApi();
+
+        if (didNeedWakeUp) _requestResync();
+
         break;
     }
+  }
+
+  void _requestResync() {
+    context
+        .read<ZCoinActivationBloc>()
+        .add(ZCoinActivationRequested(isResync: true));
   }
 
   @override
@@ -311,11 +361,20 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
           body: _children[snapshot.data],
           bottomNavigationBar: Material(
             elevation: 8.0,
-            child: Container(
-              color: Theme.of(context).colorScheme.surface,
-              child: SafeArea(
-                child: networkStatusStreamBuilder(
-                  snapshot.data,
+            child: real_bloc.MultiBlocListener(
+              listeners: [
+                real_bloc.BlocListener<ZCoinActivationBloc,
+                    ZCoinActivationState>(
+                  listenWhen: ZCoinStatusWidget.listenWhen,
+                  listener: ZCoinStatusWidget.listener,
+                ),
+              ],
+              child: Container(
+                color: Theme.of(context).colorScheme.surface,
+                child: SafeArea(
+                  child: networkStatusStreamBuilder(
+                    snapshot.data,
+                  ),
                 ),
               ),
             ),
@@ -509,7 +568,9 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
                     icon: Stack(
                       children: <Widget>[
                         const Icon(Icons.dehaze, key: Key('main-nav-more')),
-                        if (updatesProvider.status != UpdateStatus.upToDate)
+                        if (updatesProvider.status != UpdateStatus.upToDate ||
+                            context.select<ZCoinActivationBloc, bool>((value) =>
+                                value.state is ZCoinActivationInProgess))
                           buildRedDot(context),
                       ],
                     ),

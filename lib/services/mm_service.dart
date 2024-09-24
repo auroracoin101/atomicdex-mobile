@@ -1,15 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
-import '../app_config/app_config.dart';
-import '../model/version_mm2.dart';
-import 'package:path/path.dart' as path;
 import 'package:flutter/services.dart'
     show EventChannel, MethodChannel, rootBundle, SystemChannels;
 import 'package:http/http.dart' as http;
 import 'package:http/http.dart';
+import 'package:komodo_dex/app_config/coins_updater.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
+import '../app_config/app_config.dart';
 import '../blocs/coins_bloc.dart';
 import '../blocs/orders_bloc.dart';
 import '../model/balance.dart';
@@ -18,17 +20,17 @@ import '../model/coin.dart';
 import '../model/config_mm2.dart';
 import '../model/get_balance.dart';
 import '../model/swap_provider.dart';
-import '../services/mm.dart';
+import '../model/version_mm2.dart';
 import '../services/job_service.dart';
+import '../services/mm.dart';
 import '../utils/encryption_tool.dart';
 import '../utils/log.dart';
 import '../utils/utils.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 
 /// Singleton shorthand for `MMService()`, Market Maker API.
 MMService mmSe = MMService._internal();
 
-/// Interface to Market Maker, https://developers.atomicdex.io/
+/// Interface to Market Maker, https://developers.komodoplatform.com/
 class MMService {
   factory MMService() => mmSe;
   MMService._internal();
@@ -37,7 +39,15 @@ class MMService {
   Process mm2Process;
   List<Coin> coins = <Coin>[];
 
-  /// Switched on when we hear from MM.
+  /// Represents wether mm2 has been started or not for this session even if
+  /// it is not currently running.
+  ///
+  /// On iOS, the RPC server is killed when the app goes to background. This
+  /// will remain true when the app is restored.
+  ///
+  /// Use [MM.isRpcUp()] to get the current status of the RPC server.
+  ///
+  /// Use [MM.untilRpcIsUp()] to efficiently await until RPC is up.
   bool get running => _running;
   bool _running = false;
 
@@ -54,9 +64,9 @@ class MMService {
   /// Our name and version
   String gui;
 
-  /// We're using the netid of 7777 currently
-  /// But it's possible in theory to connect the UI to MM running on a different netid
-  int netid = 7777;
+  /// We're using the netid of 8762 as part of the bracking changes in MM2
+  /// warrenting a new netid.
+  int netid = 8762;
 
   /// Effective memory used by the application, MiB
   /// As of now it is specific to iOS
@@ -80,11 +90,6 @@ class MMService {
   /// MM log is coming that way on iOS.
   static const EventChannel logC = EventChannel('AtomicDEX/logC');
   Client client = http.Client();
-
-  /// Maps a $year-$month-$day date to the corresponding log file.
-  /// The current date time can fluctuate (due to time correction services, for instance)
-  /// so the map helps us with always picking the file that corresponds to the actual date.
-  final Map<String, FileAndSink> _logs = {};
 
   Future<void> _trafficMetrics() async {
     dynamic metrics = await MM.getMetricsMM2(BaseService(method: 'metrics'));
@@ -152,7 +157,7 @@ class MMService {
 
     jobService.install('updateMm2VersionInfo', 3.14, (j) async {
       if (!mmSe.running) return;
-      if (mmVersion == null && mmDate == null) {
+      if (mmVersion == null && mmDate == null && await MM.pingMm2()) {
         await initializeMmVersion();
       }
     });
@@ -232,89 +237,97 @@ class MMService {
       ? null
       : applicationDocumentsDirectorySync.path + '/';
 
-  /// Returns a log file matching the present [now] time.
-  FileAndSink currentLog({DateTime now}) {
-    // Time can fluctuate back and forth due to time syncronization and such.
-    // Hence we're using a map that allows us to direct the log entries
-    // to a log file precisely matching the `now` time,
-    // even if it happens to jump a bit into the past.
-    // This in turn allows us to make the log lines shorter
-    // by only mentioning the current time (and not date) in a line.
+  /// Checks the size of a directory. Intended to be run in an isolate to avoid
+  /// blocking the UI thread.
+  ///
+  /// NB! Don't use in main thread, it will lock the UI.
+  static Future<double> _getDirectorySizeIsolate(
+      Map<String, String> params) async {
+    assert(
+      ['dirPath', 'endsWith'].every((key) => params.containsKey(key)),
+      'params must contain keys: dirPath, endsWith',
+    );
 
-    final files = Directory(filesPath);
-    // removes the last file until the total space is less than 500mb
-    while (dirStatSync(filesPath) > Log.limitMB) {
-      // get only log files in case we have other files(not-log) in the folder
-      List<FileSystemEntity> _files = files
-          .listSync()
-          .where((element) => element.path.endsWith('.log'))
-          .toList();
-      _files.sort((b, a) => a.path.compareTo(b.path));
-      try {
-        if (_files.first.existsSync()) _files.first.deleteSync();
-      } catch (e) {
-        print(e);
-      }
-    }
-    now ??= DateTime.now();
-    final ymd = '${now.year}'
-        '-${Log.twoDigits(now.month)}'
-        '-${Log.twoDigits(now.day)}';
-    final log = _logs[ymd];
-    if (log != null && (log.file?.existsSync() ?? false)) return log;
+    mustRunInIsolate();
 
-    if (_logs.length > 2) _logs.clear(); // Close day-before-yesterday logs.
+    final dirPath = params['dirPath'] as String;
+    final endsWith = params['endsWith'] as String;
 
-    // Remove old logs.
-    final unusedLog = File('${filesPath}log.txt');
-    if (unusedLog.existsSync()) unusedLog.deleteSync();
+    final dir = Directory(dirPath);
 
-    final unusedLogDate = File('${filesPath}logDate.txt');
-    if (unusedLogDate.existsSync()) unusedLogDate.deleteSync();
+    double convertBytesToOutputUnitsMB(int bytes) => bytes / pow(1024, 2);
 
-    final gz = File('${filesPath}dex.log.gz'); // _shareFile
-    if (gz.existsSync()) gz.deleteSync();
+    if (!dir.existsSync()) return 0;
 
-    final logName = RegExp(r'^(\d{4})-(\d{2})-(\d{2})\.log$');
-    final List<File> unlink = [];
-    for (FileSystemEntity en in files.listSync()) {
-      final name = path.basename(en.path);
-      final mat = logName.firstMatch(name);
-      if (mat == null) continue;
-      if (en.statSync().type != FileSystemEntityType.file) continue;
-      final int year = int.parse(mat[1]);
-      final int month = int.parse(mat[2]);
-      final int day = int.parse(mat[3]);
-      final enDate = DateTime(year, month, day);
-      if (enDate.isAfter(now)) continue;
-      final int delta = now.difference(enDate).inDays;
-      if (delta > 3) unlink.add(en);
-    }
-    for (File en in unlink) en.deleteSync();
+    // NB: Doesn't ignore file links
+    final hasFileNameFilter = endsWith != null && endsWith.isNotEmpty;
 
-    // Create and open the log.
+    final dirStats = dir.statSync();
 
-    final file = File('$filesPath$ymd.log');
-    if (!file.existsSync()) {
-      file.createSync();
-      file.writeAsStringSync('${DateTime.now()}');
-    }
+    final files = dir
+        .listSync(recursive: true, followLinks: false)
+        .whereType<File>()
+        .where(
+            (file) => hasFileNameFilter ? file.path.endsWith(endsWith) : true)
+        .toList();
 
-    final sink = file.openWrite(mode: FileMode.append);
-    final ret = FileAndSink(file, sink);
-    _logs[ymd] = ret;
-    return ret;
+    final sizeBytes =
+        files.fold<int>(0, (prev, file) => prev + file.lengthSync());
+
+    return convertBytesToOutputUnitsMB(sizeBytes);
+  }
+
+  /// Gets the size of a directory or file. If the directory is a folder, the
+  /// size of all files in the folder (fully recursive) will be added together.
+  /// If the directory is a file, the size of the file will be returned.
+  ///
+  /// Specify [endsWith] to only include files ending with this string in the
+  /// size calculation. Otherwise all files will be included.
+  ///
+  /// Similar to [dirStatSync], but runs in an isolate to avoid blocking the
+  /// UI thread.
+  static Future<double> getDirectorySize(
+    String dirPath, {
+
+    /// If not null and not empty, only files ending with this string will be
+    /// included in the size calculation.
+    ///
+    /// Otherwise all files will be included.
+    String endsWith,
+    bool allowCache = true,
+  }) async {
+    final dirSizeMB = await compute(_getDirectorySizeIsolate, <String, String>{
+      'dirPath': dirPath,
+      'endsWith': endsWith,
+    });
+
+    return dirSizeMB;
+  }
+
+  // TODO: Cache the directory size lookups to avoid unnecessary file system
+  // lookups. Check if the cached value is still valid by checking the recursive
+  // directory size and/or the last modified date of the directory.
+  static Map<String, double> _directorySizeCache = <String, double>{};
+
+  static _getCachedDirectorySize(String dirPath, {String endsWith}) {
+    final isCached = _directorySizeCache.containsKey('$dirPath**$endsWith');
+    if (isCached) return _directorySizeCache['$dirPath**$endsWith'];
+  }
+
+  static _storeCachedDirectorySize(String dirPath,
+      {String endsWith, @required double size}) {
+    _directorySizeCache['$dirPath**$endsWith'] = size;
   }
 
   /// returns directory size in MB
-  double dirStatSync(String dirPath) {
+  static double dirStatSync(String dirPath, {String endsWith = 'log'}) {
     int totalSize = 0;
     var dir = Directory(dirPath);
     try {
       if (dir.existsSync()) {
         dir
             .listSync(recursive: true, followLinks: false)
-            .where((element) => element.path.endsWith('log'))
+            .where((element) => element.path.endsWith(endsWith))
             .forEach((FileSystemEntity entity) {
           if (entity is File) {
             totalSize += entity.lengthSync();
@@ -327,11 +340,15 @@ class MMService {
     return totalSize / 1000000;
   }
 
+  // static Future<double> dirStatAsync(Map<String,dynamic> params){
+  //  TODO: Asnc method that runs in isolate
+  // }
+
   Future<void> runBin(String rpcPass) async {
     final String passphrase = await EncryptionTool().read('passphrase');
     final PackageInfo packageInfo = await PackageInfo.fromPlatform();
     final String os = Platform.isAndroid ? 'Android' : 'iOS';
-    gui = 'atomicDEX ${packageInfo.version} $os';
+    gui = 'Komodo Wallet ${packageInfo.version} $os';
     if (Platform.isAndroid) {
       final buildTime = await nativeC.invokeMethod<int>('BUILD_TIME');
       gui += '; BT=${buildTime ~/ 1000}';
@@ -407,25 +424,6 @@ class MMService {
     }
   }
 
-  void log2file(String chunk, {DateTime now}) {
-    if (chunk == null) return;
-    if (!chunk.endsWith('\n')) chunk += '\n';
-
-    now ??= DateTime.now();
-    final log = currentLog(now: now);
-
-    // There's a chance that during life cycle transitions log file descriptor will be closed on iOS.
-    // The try-catch will hopefully help us detect this and reopen the file.
-    IOSink s = log.sink;
-    try {
-      s.write(chunk);
-    } catch (ex) {
-      print(ex);
-      log.sink = s = log.file.openWrite(mode: FileMode.append);
-      s.write(chunk);
-    }
-  }
-
   /// Load fresh lists of orders and swaps from MM.
   Future<void> updateOrdersAndSwaps() async {
     await swapMonitor.update();
@@ -446,25 +444,54 @@ class MMService {
   }
 
   Future<List<dynamic>> readJsonCoinInit() async {
+    List<dynamic> coinsJson;
+
     try {
-      return jsonDecode(await rootBundle.loadString('assets/coins.json'));
+      coinsJson = await jsonDecode(await CoinUpdater().getCoins());
+
+      coinsJson = coinsJson.map((dynamic coinDynamic) {
+        try {
+          if (coinDynamic is Map<String, dynamic>) {
+            coinDynamic = coinModifier(coinDynamic);
+          }
+        } catch (e) {
+          // Coin modification failed. This is not a critical error, so we can,
+          // but developers should be aware of it.
+          Log('mm_service', 'Coin modification failed. ${e.toString()}');
+        }
+        return coinDynamic;
+      }).toList();
     } catch (e) {
-      if (kDebugMode) {
-        Log('mm_service', 'readJsonCoinInit] $e');
-        printError('$e');
-        printError('Try to run `\$sh fetch_coins.sh`.'
-            ' See README.md for details.');
-        SystemChannels.platform.invokeMethod<dynamic>('SystemNavigator.pop');
-      }
+      Log('mm_service', 'Error loading coin config: ${e.toString()}');
+
       return [];
     }
+
+    return coinsJson;
+  }
+
+  /// A function to modify each loaded coin in the list of coins before it is
+  /// passed to MM.
+  Map<String, dynamic> coinModifier(Map<String, dynamic> coin) {
+    // Remove the check_point_block from ZHTLC coins because this is required
+    // if we want to activate ZHTLC coins and only sync from the current date.
+    // The check_point_block will be removed from the coin config repo in the
+    // future, so this is a temporary workaround.
+    if (coin.containsKey('protocol') &&
+        coin['protocol'].containsKey('type') &&
+        coin['protocol']['type'] == 'ZHTLC' &&
+        coin['protocol']['protocol_data'].containsKey('check_point_block')) {
+      coin['protocol']['protocol_data'].remove('check_point_block');
+    }
+    return coin;
   }
 
   Future<void> initCoinsAndLoad() async {
     try {
       await coinsBloc.activateCoinKickStart();
       final active = await coinsBloc.electrumCoins();
-      await coinsBloc.enableCoins(active);
+
+      await coinsBloc.enableCoins(active, initialization: true);
 
       for (int i = 0; i < 2; i++) {
         await coinsBloc.retryActivatingSuspendedCoins();
@@ -520,18 +547,32 @@ class MMService {
     return mm2StatusFrom(await checkStatusMm2());
   }
 
-  Future<dynamic> handleWakeUp() async {
-    if (!Platform.isIOS) return;
-    if (!running) return;
+  /// Handles the initialisation of MM2 and the app state if the app was
+  /// suspended and then resumed.
+  ///
+  /// Returns a [bool] with the result of whether a wake-up was performed.
+  /// Typically this is only necessary on iOS.
+  FutureOr<bool> wakeUpSuspendedApi() async {
+    if (!Platform.isIOS || !running) return false;
 
     /// Wait until mm2 is up, in case it was restarted from Swift
-    await pauseUntil(() async => await MM.isRpcUp());
+    await MM.untilRpcIsUp();
 
     /// If [running], but enabled coins list is empty,
     /// it means that mm2 was restarted from Swift, and we
     /// should reenable active coins ones again
-    if ((await MM.getEnabledCoins()).isEmpty) initCoinsAndLoad();
+    if (await hasCoinsLoaded()) return false;
+
+    await initCoinsAndLoad().catchError((e) {
+      Log('MMService:handleWakeUp',
+          'Failed to init coins and load. ${e.toString()}');
+    });
+
+    return true;
   }
+
+  Future<bool> hasCoinsLoaded() async =>
+      (await MM.getEnabledCoins()).isNotEmpty;
 
   Future<List<Balance>> getAllBalances(bool forceUpdate) async {
     Log('mm_service', 'getAllBalances');
